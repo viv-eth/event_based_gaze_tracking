@@ -20,7 +20,8 @@ parser.add_argument('--eye', default='left', choices=['left', 'right'],
 parser.add_argument('--data_dir', default=os.path.join(os.getcwd(), 'eye_data'),
                     help='absolute path to eye_data/, by default assumes same parent dir as this script')
 parser.add_argument('--buffer', type=int, default=1000, help='How many events to store before displaying.')
-opt = parser.parse_args()
+# opt = parser.parse_args()
+opt, unknown = parser.parse_known_args()
 
 'Types of data'
 Event = namedtuple('Event', 'polarity row col timestamp')
@@ -139,10 +140,18 @@ def display_data(eye_dataset):
     row_buffer = []
     polarity_buffer = []
     s = plt.plot([],[])[0]
+
+    print('Displaying Data....')
     
     init_img_axis = False
     for i, data in enumerate(eye_dataset):
+        if i > 2000:
+            break
+    #     # define how many frames to show
+    #     if i > 1000:
+    #         break
         if type(data) is Frame:
+            print("Printing frame {}".format(i))
             if not init_img_axis:
             	img_axis = plt.imshow(data.img)
             	init = True
@@ -151,6 +160,9 @@ def display_data(eye_dataset):
             plt.draw()
             plt.pause(0.0001)
         else:
+            # define how many events to show
+            # if i > 2000:
+            #     break
             col_buffer += [data.col]
             row_buffer += [data.row]
             polarity_buffer += [color[data.polarity]]
