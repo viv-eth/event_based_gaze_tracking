@@ -15,12 +15,11 @@ from collections import namedtuple
 
 parser = argparse.ArgumentParser(description='Arguments for using the eye visualizer')
 parser.add_argument('--subject', type=int, default=22, help='which subject to evaluate')
-parser.add_argument('--eye', default='left', choices=['left', 'right'],
-                    help='Which eye to visualize, left or right')
+parser.add_argument('--eye', default=0, help='Which eye to visualize, left (0) or right (1)')
 parser.add_argument('--data_dir', default=os.path.join(os.getcwd(), 'eye_data'),
                     help='absolute path to eye_data/, by default assumes same parent dir as this script')
 parser.add_argument('--buffer', type=int, default=1000, help='How many events to store before displaying.')
-# opt = parser.parse_args()
+
 opt, unknown = parser.parse_known_args()
 
 'Types of data'
@@ -179,7 +178,7 @@ def display_data(eye_dataset):
 
 def main():
     eye_dataset = EyeDataset(opt.data_dir, opt.subject)
-    if opt.eye == 'left':
+    if opt.eye == 0:
         print('Showing the left eye of subject ' + str(opt.subject) + '\n')
         print('Loading Data from ' + opt.data_dir + '..... \n')
         eye_dataset.collect_data(0)
