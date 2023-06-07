@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt, mpld3
 import seaborn as sns
 import cv2
 import sys 
@@ -16,6 +16,9 @@ import argparse
 import time
 import tkinter as tk
 import plotly.graph_objects as go
+import mpl_toolkits.mplot3d.axes3d as p3
+import matplotlib.animation as animation
+import random
 
 
 FRAME_WIDTH = 346
@@ -23,17 +26,22 @@ FRAME_HEIGHT = 260
 
 parser = argparse.ArgumentParser(description='Arguments for using the eye visualizer')
 parser.add_argument('--subject', type=int, default=4, help='which subject to evaluate')
-parser.add_argument('--eye', default=0, choices=[0, 1], help='Which eye to visualize, left (0) or right (1)')
+parser.add_argument('--eye', default=0, help='Which eye to visualize, left (0) or right (1)')
 parser.add_argument('--debug', default=False, help='Whether to print debug statements')
+parser.add_argument('--demo', default=False, help='Whether to plot a single high density frame for demo purposes')
+parser.add_argument('--plot', default=False, help='Whether to plot the data')
 
 opt, unknown = parser.parse_known_args()
 
 subject = opt.subject
 eye = opt.eye
 debug = opt.debug
+demo = opt.demo
+plot = opt.plot
 
 # load the dataset for the subject
 eye_dataset = visualize.EyeDataset(os.path.join(os.getcwd(), 'eye_data'), subject)
+experiment_path = os.path.join(os.getcwd(), 'eye_data/user' + str(subject) + '/' + str(eye) + '/')
 eye_dataset.collect_data(eye)
 
 # access the frame stack of eye_dataset
@@ -57,6 +65,7 @@ frame_rate = 25 # fps
 event_df['frame_number'] = event_df['timestamp'].apply(lambda x: int(x / (1000000 / frame_rate)))
 frame_df['frame_number'] = frame_df['timestamp'].apply(lambda x: int(x / (1000000 / frame_rate)))
 
+print("Performing pupil detection...")
 # iterate over the frame_df and detect the center of the pupil in each frame
 centers = []
 for frame_path in frame_df['img_path'].values:
@@ -71,6 +80,8 @@ for frame_path in frame_df['img_path'].values:
 
 # add the centers to the frame_df
 frame_df['pupil'] = centers
+
+print("Pupil detection complete.")
 
 frame_height = FRAME_HEIGHT
 frame_width = FRAME_WIDTH
@@ -90,6 +101,7 @@ pupil_centers = frame_df['pupil'].values
 frame_paths = frame_df['img_path'].values
 frame_numbers = frame_df['frame_number'].values
 
+print("Filtering out pupil centers that are not on a black pixel...")
 # check which pupil centers are on a black pixel
 for row in frame_df.iterrows():
     frame_path = row[1]['img_path']
@@ -106,8 +118,14 @@ for row in frame_df.iterrows():
 # we will now interpolate the pupil centers that are None
 # using the spline interpolation method
 
+print("Interpolating pupil centers from remaining data...")
+
 new_indices = range(original_frame_df.index.min(), original_frame_df.index.max() + 1)
 frame_df = frame_df.reindex(new_indices)
+
+pupil_nan_count = frame_df['pupil'].isna().sum()
+
+print("Interpolating {} pupil coordinates...".format(pupil_nan_count))
 
 frame_df['img_path'] = original_frame_df['img_path'].fillna(original_frame_df['img_path'])
 frame_df['timestamp'] = original_frame_df['timestamp'].fillna(original_frame_df['timestamp'])
@@ -119,9 +137,7 @@ frame_df['pupil_x'] = frame_df['pupil_x'].interpolate(method='spline', order=3)
 frame_df['pupil_y'] = frame_df['pupil_y'].interpolate(method='spline', order=3)
 frame_df['pupil'] = frame_df[['pupil_x', 'pupil_y']].values.tolist()
 
-print(frame_df)
-
-
+print("Filtering out outliers from the frame data...")
 # Calculate z-scores for x and y coordinates
 z_scores_x = np.abs((frame_df['pupil_x'] - frame_df['pupil_x'].mean()) / frame_df['pupil_x'].std())
 z_scores_y = np.abs((frame_df['pupil_y'] - frame_df['pupil_y'].mean()) / frame_df['pupil_y'].std())
@@ -129,8 +145,11 @@ z_scores_y = np.abs((frame_df['pupil_y'] - frame_df['pupil_y'].mean()) / frame_d
 threshold = 3
 
 # filter out rows with outliers
+outlier_count = len(frame_df[(z_scores_x > threshold) | (z_scores_y > threshold)])
+print("Filtering out {} outliers...".format(outlier_count))
 frame_df = frame_df[(z_scores_x <= threshold) & (z_scores_y <= threshold)]
 
+print("Interpolating the outliers...")
 # reindex the rows and interpolate the pupil centers
 new_indices = range(frame_df.index.min(), frame_df.index.max() + 1)
 frame_df = frame_df.reindex(new_indices)
@@ -146,20 +165,53 @@ frame_df['pupil'] = frame_df[['pupil_x', 'pupil_y']].values.tolist()
 
 new_num_frames = len(frame_df)
 
-print("Filtered out {}/{} frames".format(original_num_frames - new_num_frames, original_num_frames))
-
-print("Remaining frames: {}".format(new_num_frames))
+print("Frame data processing complete.")
 
 
 # drop all events that are not in the frame_df
-original_num_events = len(event_df)
+
 event_df = event_df[event_df['frame_number'].isin(frame_df['frame_number'].values)]
-new_num_events = len(event_df)
 
 
-print("Filtered out {}/{} events".format(original_num_events - new_num_events, original_num_events))
+# store the frame_df and event_df to npy files in the experiment directory
+frame_numpy = frame_df.to_numpy()
+event_numpy = event_df.to_numpy()
 
-print("Remaining events: {}".format(new_num_events))
+np.save(os.path.join(experiment_path, 'frame_data.npy'), frame_numpy)
+np.save(os.path.join(experiment_path, 'event_data.npy'), event_numpy)
+
+# event_df_indices = event_df.index.values
+# original_event_df = event_df.copy() 
+
+# print("Removing outliers from the event data...")
+
+# # Calculate z-scores for x and y coordinates
+# z_scores_x = np.abs((event_df['x'] - event_df['x'].mean()) / event_df['x'].std())
+# z_scores_y = np.abs((event_df['y'] - event_df['y'].mean()) / event_df['y'].std())
+
+# threshold = 3
+
+# # filter out rows with outliers
+# outlier_count = len(event_df[(z_scores_x > threshold) | (z_scores_y > threshold)])
+# print("Filtering out {} outliers...".format(outlier_count))
+# event_df = event_df[(z_scores_x <= threshold) & (z_scores_y <= threshold)]
+
+# print("Interpolating the outliers...")
+# # reindex the rows and interpolate the pupil centers
+# new_indices = range(event_df_indices.min(), event_df_indices.max() + 1)
+# event_df = event_df.reindex(new_indices)
+
+# event_df['timestamp'] = original_event_df['timestamp'].fillna(original_event_df['timestamp'])
+# event_df['x'] = event_df['x'].interpolate(method='spline', order=3)
+# event_df['y'] = event_df['y'].interpolate(method='spline', order=3)
+# event_df['polarity'] = original_event_df['polarity'].fillna(original_event_df['polarity'])
+# event_df['frame_number'] = original_event_df['frame_number'].fillna(original_event_df['frame_number'])
+
+# print("Event data processing complete.")
+
+
+
+
 
 # the original events are sampled at around 160us
 # but we can only sample at 1ms
@@ -235,43 +287,175 @@ for row in event_count_df.iterrows():
         current_event_count = 0
 
 
-# make a 3D plot of the events with the first high densiy event
-first_high_density_event = high_density_buffers[0]
-first_high_density_event_df = event_df[event_df['frame_number'].isin(first_high_density_event)]
+if demo:
+    # make a 3D plot of the events with the first high densiy event
+    first_high_density_event = high_density_buffers[0]
+    first_high_density_event_df = event_df[event_df['frame_number'].isin(first_high_density_event)]
 
-unique_frame_numbers = first_high_density_event_df['frame_number'].unique()
+    unique_frame_numbers = first_high_density_event_df['frame_number'].unique()
 
-pupil_timestamps = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['timestamp'].values
-pupil_centers = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['pupil'].values
-pupil_x = [pupil_center[0] for pupil_center in pupil_centers]
-pupil_y = [pupil_center[1] for pupil_center in pupil_centers]
-
-
-# get the img paths
-frame_paths = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['img_path'].values
-
-# get the timestamps
-frame_timestamps = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['timestamp'].values
-
-# get the x and y coordinates
-x = first_high_density_event_df['x'].values
-y = first_high_density_event_df['y'].values
-z = first_high_density_event_df['timestamp'].values
-
-# get the polarity
-polarity = first_high_density_event_df['polarity'].values
+    pupil_timestamps = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['timestamp'].values
+    pupil_centers = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['pupil'].values
+    pupil_x = [pupil_center[0] for pupil_center in pupil_centers]
+    pupil_y = [pupil_center[1] for pupil_center in pupil_centers]
 
 
-# plot the events
-# flip along the y axis
-y = FRAME_HEIGHT - y
-# frame_y_coords = FRAME_HEIGHT - frame_y_coords]
-fig = plt.figure()
-ax = fig.add_subplot(111, projection='3d')
-ax.scatter(z, x, y, c=polarity, alpha=0.5)
-ax.scatter(pupil_timestamps, pupil_x, pupil_y, c='r', s = 100)
-ax.set_xlabel('Timestamp')
-ax.set_ylabel('X')
-ax.set_zlabel('Y')
-plt.show()
+    # get the img paths
+    frame_paths = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['img_path'].values
 
+    # get the timestamps
+    frame_timestamps = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['timestamp'].values
+
+    # get the x and y coordinates
+    x = first_high_density_event_df['x'].values
+    y = first_high_density_event_df['y'].values
+    z = first_high_density_event_df['timestamp'].values
+
+    # get the polarity
+    polarity = first_high_density_event_df['polarity'].values
+
+
+    # plot the events
+    # flip along the y axis
+    y = FRAME_HEIGHT - y
+    # frame_y_coords = FRAME_HEIGHT - frame_y_coords]
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(z, x, y, c=polarity, alpha=0.5, cmap='viridis')
+    ax.scatter(pupil_timestamps, pupil_x, pupil_y, c='r', s = 100)
+    ax.set_xlabel('Timestamp')
+    ax.set_ylabel('X')
+    ax.set_zlabel('Y')
+    plt.show()
+    # mpld3.save_html(fig, "demo.html")
+
+    # now do the same for the events and pixels using plotly
+    fig = go.Figure(data=[go.Scatter3d(
+        x=z,
+        y=x,
+        z=y,
+        mode='markers',
+        marker=dict(
+            size=2,
+            color=polarity,                # set color to an array/list of desired values
+            colorscale='viridis',   # choose a colorscale
+            opacity=0.8
+        ),
+    ), 
+    go.Scatter3d(
+        x=pupil_timestamps,
+        y=pupil_x,
+        z=pupil_y,
+        mode='markers',
+        marker=dict(
+            size=5,
+            color='red',                # set color to an array/list of desired values
+            opacity=0.8
+        ),
+        name='Pupil Center'
+    )])
+    fig.update_layout(scene = dict(
+                    xaxis_title='Timestamp',
+                    yaxis_title='X',
+                    zaxis_title='Y'),
+                    width=1000,
+                    margin=dict(r=20, b=10, l=10, t=10),
+                    legend=dict(
+                        yanchor="top",
+                        y=0.99,
+                        xanchor="left",
+                        x=0.01
+                    ))
+
+    fig.write_html("demo.html")
+
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(pupil_timestamps, pupil_x, pupil_y, c='r', s = 100)
+    ax.scatter(z, x, y, c=polarity, alpha=0.5, cmap='viridis')
+    ax.set_xlabel('Timestamp')
+    ax.set_ylabel('X')
+    ax.set_zlabel('Y')
+
+    def rotate(angle):
+        ax.view_init(azim=angle)
+
+    rot_animation = animation.FuncAnimation(fig, rotate, frames=np.arange(0,362,2),interval=100)
+    rot_animation.save('rotation.gif', dpi=80, writer='pillow')
+
+    # pick 10 random high density events
+    random_high_density_events = random.sample(high_density_buffers, 10)
+
+    # for every random event create a gif
+    plot_gif = False
+    if plot_gif:
+        for i, event in enumerate(random_high_density_events):
+            print("Creating gif for event: ", i)
+            # get the unique frame numbers
+            unique_frame_numbers = event
+
+            # get the pupil centers
+            pupil_timestamps = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['timestamp'].values
+            pupil_centers = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['pupil'].values
+            pupil_x = [pupil_center[0] for pupil_center in pupil_centers]
+            pupil_y = [pupil_center[1] for pupil_center in pupil_centers]
+
+            # get the img paths
+            frame_paths = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['img_path'].values
+
+            # get the timestamps
+            frame_timestamps = frame_df[frame_df['frame_number'].isin(unique_frame_numbers)]['timestamp'].values
+
+            # get the x and y coordinates
+            x = event_df[event_df['frame_number'].isin(unique_frame_numbers)]['x'].values
+            y = event_df[event_df['frame_number'].isin(unique_frame_numbers)]['y'].values
+            z = event_df[event_df['frame_number'].isin(unique_frame_numbers)]['timestamp'].values   
+            polarity = event_df[event_df['frame_number'].isin(unique_frame_numbers)]['polarity'].values
+
+            y = FRAME_HEIGHT - y
+
+            # plot the events
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+            ax.scatter(pupil_timestamps, pupil_x, pupil_y, c='r', s = 100)
+            ax.scatter(z, x, y, c=polarity, alpha=0.5, cmap='viridis')
+            ax.set_xlabel('Timestamp')
+            ax.set_ylabel('X')
+            ax.set_zlabel('Y')
+
+            def rotate(angle):
+                ax.view_init(azim=angle)
+
+            rot_animation = animation.FuncAnimation(fig, rotate, frames=np.arange(0,362,2),interval=100)
+            rot_animation.save('rotation_{}.gif'.format(i), dpi=80, writer='pillow')
+
+            print("Done creating gif for event: ", i)
+
+
+if plot:
+    # 3D plot of the events with pupil centers
+    event_x_coords = event_df['x'].values
+    event_y_coords = event_df['y'].values
+    event_z_coords = event_df['timestamp'].values
+    polarity       = event_df['polarity'].values
+
+    pupil_x_coords = frame_df['pupil_x'].values 
+    pupil_y_coords = frame_df['pupil_y'].values  
+    pupil_z_coords = frame_df['timestamp'].values.astype(int)
+
+    # flip along the y axis
+    event_y_coords = FRAME_HEIGHT - event_y_coords
+
+    print("Drawing 3D plot...")
+
+    fig = plt.figure()
+    fig.set_size_inches(30, 20)
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(event_z_coords, event_x_coords, event_y_coords, c=polarity, alpha=0.5)
+    ax.scatter(pupil_z_coords, pupil_x_coords, pupil_y_coords, c='r', s = 100)
+    ax.set_xlabel('Timestamp')
+    ax.set_ylabel('X')
+    ax.set_zlabel('Y')
+    # mpld3.save_html(fig, "3d_plot.html")
+    plt.savefig("3d_plot.png")
