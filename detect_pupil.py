@@ -1,3 +1,14 @@
+import pandas as pd
+import cv2
+import numpy as np
+import math
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import random
+import scipy
+from scipy import stats 
+import seaborn as sns
+
 def pupil_detection_refinement(frame_path: str, plot: bool, best: bool, debug: bool):
     """
     Refines the pupil detection by applying edge detection and ellipse fitting to the image.
@@ -448,8 +459,8 @@ def pupil_postprocessing(frame_df: pd.DataFrame) -> pd.DataFrame:
     # interpolate missing values in the pupil column
     print("Interpolating {} missing values in the pupil column...".format(frame_df["pupil"].isna().sum()))
     
-    x_coords = frame_df['pupil'].apply(lambda coord: coord[0] if coord is not None else None).values
-    y_coords = frame_df['pupil'].apply(lambda coord: coord[1] if coord is not None else None).values
+    x_coords = frame_df['pupil'].apply(lambda coord: coord[0][0] if coord is not None else None).values
+    y_coords = frame_df['pupil'].apply(lambda coord: coord[0][0] if coord is not None else None).values
 
     # interpolate missing values in the x and y coordinates
     x_coords = pd.Series(x_coords).interpolate(method='spline', order=3).values
@@ -458,13 +469,14 @@ def pupil_postprocessing(frame_df: pd.DataFrame) -> pd.DataFrame:
     # replace the pupil column with the interpolated values
     frame_df['pupil'] = list(zip(x_coords, y_coords))
 
-
-
     print("There are {} missing values in the pupil column after interpolation.".format(frame_df["pupil"].isna().sum()))
 
     # remove outliers using z-score in the pupil column
     threshold = 3
-    
+
+    x_coords = frame_df['pupil'].apply(lambda coord: coord[0] if coord is not None else None).values
+    y_coords = frame_df['pupil'].apply(lambda coord: coord[1] if coord is not None else None).values
+
     # calculate z-score for each pupil coordinate
     z_score_x = np.abs(stats.zscore(frame_df['pupil'].apply(lambda coord: coord[0] if coord is not None else None).values))
     z_score_y = np.abs(stats.zscore(frame_df['pupil'].apply(lambda coord: coord[1] if coord is not None else None).values))
@@ -495,3 +507,84 @@ def pupil_postprocessing(frame_df: pd.DataFrame) -> pd.DataFrame:
 
 
     return frame_df
+
+
+def high_density_buffer(buffer_size: int, event_count_df: pd.DataFrame):
+    """
+    Create a buffer of frames with high event density.
+
+    Parameters
+    ----------
+    buffer_size : int
+        The size of the buffer in frames
+    event_count_df : pd.DataFrame
+        DataFrame containing the event count for each frame
+
+    Returns
+    -------
+    list
+        List of lists containing the frame numbers of the high density buffers
+    """
+
+    event_buffer = []
+    high_density_buffers = []
+    current_event_count = 0
+
+    for row in event_count_df.iterrows():
+        # get the frame number
+        frame_number = row[1]['frame_number']
+        # get the event count
+        event_count = row[1]['event_count']
+        # add the frame number to the event buffer
+        event_buffer.append(frame_number)
+        # add the event count to the current event count
+        current_event_count += event_count
+        # check if the current event count is greater than the buffer size
+        if current_event_count > buffer_size:
+            # add all frames to the high density events
+            high_density_buffers.append(event_buffer)
+            # reset the event buffer
+            event_buffer = []
+            # reset the current event count
+            current_event_count = 0
+
+    return high_density_buffers
+
+
+def event_binning(event_df: pd.DataFrame):
+    """
+    Bin the events into samples of 10 events each.
+
+    Parameters
+    ----------
+    event_df : pd.DataFrame
+        DataFrame containing the events
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame containing the binned events
+    """
+    print("Binning events...")    
+
+    new_timestamps = []
+    new_x = []
+    new_y = []
+    new_polarity = []
+    new_frame_numbers = []
+    # take every 10th event
+    for i in range(0, len(event_df), 10):
+        new_timestamps.append(event_df.iloc[i]['timestamp'])
+        # for the x and y coordinates, take all of the 10 events in one list
+        x_elem = event_df.iloc[i:i+10]['x'].values
+        y_elem = event_df.iloc[i:i+10]['y'].values
+        polarity_elem = event_df.iloc[i:i+10]['polarity'].values
+        frame_number_elem = event_df.iloc[i:i+10]['frame_number'].values
+        new_x.append(x_elem)
+        new_y.append(y_elem)
+        new_polarity.append(polarity_elem)
+        new_frame_numbers.append(frame_number_elem)
+
+    new_event_df = pd.DataFrame({'timestamp': new_timestamps, 'x': new_x, 'y': new_y, 'polarity': new_polarity, 'frame_number': new_frame_numbers})
+    
+    return new_event_df
